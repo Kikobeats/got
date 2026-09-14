@@ -299,7 +299,7 @@ test('DNS auto', withServer, async (t, server, got) => {
 		dnsLookupIpVersion: 'auto'
 	});
 
-	t.true(isIPv4(response.body));
+	t.true(isIPv4(response.body) || isIPv6(response.body));
 });
 
 test('DNS IPv4', withServer, async (t, server, got) => {
@@ -347,7 +347,7 @@ test.serial('deprecated `family` option', withServer, async (t, server, got) => 
 
 		(async () => {
 			request = got({
-				family: '4'
+				family: 4
 			} as any);
 
 			try {

@@ -7,7 +7,8 @@ on:
     branches: [v11]
 
 env:
-  DEPENDENCIES_BEFORE: '2021-06-15'
+  DEV_DEPENDENCIES_BEFORE: '2021-06-15'
+  PEM_VERSION: '1.14.8'
   TYPES_NODE_VERSION: '14.18.34'
 
 jobs:
@@ -23,12 +24,14 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}
-      - run: node --version
-      - name: Install
+      - run: node --version && openssl version
+      - name: Install dev dependencies
+        run: npm install --ignore-scripts --before=$DEV_DEPENDENCIES_BEFORE
+      - name: Install latest runtime dependencies in range
         run: |
-          npm install --ignore-scripts --before=$DEPENDENCIES_BEFORE
-          npm install --ignore-scripts --no-save @types/node@$TYPES_NODE_VERSION
+          RUNTIME_DEPENDENCIES=$(node -p "Object.entries(require('./package.json').dependencies).map(([name, range]) => name + '@' + range).join(' ')")
+          npm install --ignore-scripts --no-save $RUNTIME_DEPENDENCIES pem@$PEM_VERSION @types/node@$TYPES_NODE_VERSION
       - name: Build
         run: npm run build
       - name: Test
-        run: npx ava test/retry.ts
+        run: npx ava
