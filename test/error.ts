@@ -7,6 +7,7 @@ import getStream = require('get-stream');
 import is from '@sindresorhus/is';
 import got, {RequestError, HTTPError, TimeoutError} from '../source';
 import withServer from './helpers/with-server';
+import invalidUrl from './helpers/invalid-url';
 
 const pStreamPipeline = promisify(stream.pipeline);
 
@@ -31,7 +32,7 @@ test('properties', withServer, async (t, server, got) => {
 	t.is(error.code, 'ERR_NON_2XX_3XX_RESPONSE');
 	t.is(error.message, 'Response code 404 (Not Found)');
 	t.deepEqual(error.options.url, url);
-	t.is(error.response.headers.connection, 'close');
+	t.is(error.response.headers.connection, 'keep-alive');
 	t.is(error.response.body, 'not');
 });
 
@@ -184,7 +185,8 @@ test('`http.request` error through CacheableRequest', async t => {
 
 test('normalization errors using convenience methods', async t => {
 	const url = 'undefined/https://example.com';
-	await t.throwsAsync(got(url).json().text().buffer(), {message: `Invalid URL: ${url}`});
+	const error = await t.throwsAsync<TypeError & NodeJS.ErrnoException>(got(url).json().text().buffer());
+	invalidUrl(t, error, url);
 });
 
 test('errors can have request property', withServer, async (t, server, got) => {

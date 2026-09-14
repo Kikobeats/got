@@ -5,6 +5,7 @@ import {Handler} from 'express';
 import pEvent = require('p-event');
 import got, {StrictOptions} from '../source';
 import withServer, {withBodyParsingServer} from './helpers/with-server';
+import invalidUrl from './helpers/invalid-url';
 
 const echoUrl: Handler = (request, response) => {
 	response.end(request.url);
@@ -53,10 +54,10 @@ test('throws if no arguments provided', async t => {
 });
 
 test('throws an error if the protocol is not specified', async t => {
-	await t.throwsAsync(got('example.com'), {
-		instanceOf: TypeError,
-		message: 'Invalid URL: example.com'
+	const error = await t.throwsAsync<TypeError & NodeJS.ErrnoException>(got('example.com'), {
+		instanceOf: TypeError
 	});
+	invalidUrl(t, error, 'example.com');
 
 	await t.throwsAsync(got({}), {
 		message: 'Missing `url` property'
