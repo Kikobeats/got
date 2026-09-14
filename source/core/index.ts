@@ -1,5 +1,5 @@
 import {promisify} from 'util';
-import {Duplex, Readable} from 'stream';
+import {Duplex, Readable, PassThrough} from 'stream';
 import {ReadStream} from 'fs';
 import {URL, URLSearchParams} from 'url';
 import {Socket} from 'net';
@@ -2230,6 +2230,13 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 			const cacheRequest = cacheableStore.get((options as any).cache)!(options, async response => {
 				// TODO: Fix `cacheable-response`
 				(response as any)._readableState.autoDestroy = false;
+
+				if (response instanceof PassThrough) {
+					// `clone-response` copies `complete` before the body has been piped, so it would stay `false` forever and `aborted` would be `true` once a keep-alive request is released.
+					Object.defineProperty(response, 'complete', {
+						get: () => response.writableEnded
+					});
+				}
 
 				if (request) {
 					(await request).emit('cacheableResponse', response);
