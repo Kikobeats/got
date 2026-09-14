@@ -14,6 +14,28 @@
 
 > Human-friendly and powerful HTTP request library for Node.js
 
+> [!NOTE]
+> `@kikobeats/got` is a maintained fork of [Got v11](https://github.com/sindresorhus/got/tree/v11.8.6), which is [no longer maintained upstream](https://github.com/sindresorhus/got/issues/2469). It keeps the v11 API and fixes compatibility with current Node.js releases:
+>
+> - Retries on connection errors no longer stop early or crash with uncaught exceptions on Node.js 24.20+ ([#1](https://github.com/Kikobeats/got/pull/1)).
+> - Piping into a Got stream with `stream.pipeline()` no longer throws `The payload has been already provided` ([#2](https://github.com/Kikobeats/got/pull/2)).
+> - Requests using the `cache` option no longer hang with keep-alive agents, the default since Node.js 20 ([#2](https://github.com/Kikobeats/got/pull/2)).
+>
+> Replace `got@11` everywhere in your dependency tree with an alias in `package.json` (`overrides` for npm, `pnpm.overrides` for pnpm):
+>
+> ```json
+> {
+> 	"overrides": {
+> 		"got@11": "npm:@kikobeats/got@^11.8.7"
+> 	},
+> 	"pnpm": {
+> 		"overrides": {
+> 			"got@11": "npm:@kikobeats/got@^11.8.7"
+> 		}
+> 	}
+> }
+> ```
+
 [![Build Status: Linux](https://travis-ci.com/sindresorhus/got.svg?branch=master)](https://travis-ci.com/github/sindresorhus/got)
 [![Coverage Status](https://coveralls.io/repos/github/sindresorhus/got/badge.svg?branch=master)](https://coveralls.io/github/sindresorhus/got?branch=master)
 [![Downloads](https://img.shields.io/npm/dm/got.svg)](https://npmjs.com/got)
