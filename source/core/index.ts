@@ -2696,14 +2696,18 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 			}
 
 			this[kRequest]!.end((error?: Error | null) => {
-				if (!error) {
-					this[kBodySize] = this[kUploadedSize];
-
-					this.emit('uploadProgress', this.uploadProgress);
-					this[kRequest]!.emit('upload-complete');
+				if (error) {
+					// `ClientRequest.end()` can report the same failure as the request's `error` event. Route it through Got's retry handling without completing `_final`, so this Duplex does not finish a failed upload.
+					this._beforeError(error);
+					return;
 				}
 
-				callback(error);
+				this[kBodySize] = this[kUploadedSize];
+
+				this.emit('uploadProgress', this.uploadProgress);
+				this[kRequest]!.emit('upload-complete');
+
+				callback();
 			});
 		};
 
