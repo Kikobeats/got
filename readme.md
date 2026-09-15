@@ -17,20 +17,20 @@
 > [!NOTE]
 > `@kikobeats/got` is a maintained fork of [Got v11](https://github.com/sindresorhus/got/tree/v11.8.6), which is [no longer maintained upstream](https://github.com/sindresorhus/got/issues/2469). It keeps the v11 API and fixes compatibility with current Node.js releases:
 >
-> - Retries on connection errors no longer stop early or crash with uncaught exceptions on Node.js 24.20+ ([#1](https://github.com/Kikobeats/got/pull/1)).
-> - Piping into a Got stream with `stream.pipeline()` no longer throws `The payload has been already provided` ([#2](https://github.com/Kikobeats/got/pull/2)).
-> - Requests using the `cache` option no longer hang with keep-alive agents, the default since Node.js 20 ([#2](https://github.com/Kikobeats/got/pull/2)).
+> - Retries on connection errors no longer stop early or crash with uncaught exceptions on Node.js 24.20+ ([#1](https://github.com/Kikobeats/got/pull/1), [#6](https://github.com/Kikobeats/got/pull/6)).
+> - Piping into a Got stream with `stream.pipeline()` no longer throws `The payload has been already provided` ([#2](https://github.com/Kikobeats/got/pull/2), [#6](https://github.com/Kikobeats/got/pull/6)).
+> - Requests using the `cache` option no longer hang with keep-alive agents, the default since Node.js 20 ([#2](https://github.com/Kikobeats/got/pull/2)), including with `cacheable-request` forks that bundle `clone-response@2` ([#4](https://github.com/Kikobeats/got/pull/4)).
 >
 > Replace `got@11` everywhere in your dependency tree with an alias in `package.json` (`overrides` for npm, `pnpm.overrides` for pnpm):
 >
 > ```json
 > {
 > 	"overrides": {
-> 		"got@11": "npm:@kikobeats/got@^11.8.7"
+> 		"got@11": "npm:@kikobeats/got@^11.8.8"
 > 	},
 > 	"pnpm": {
 > 		"overrides": {
-> 			"got@11": "npm:@kikobeats/got@^11.8.7"
+> 			"got@11": "npm:@kikobeats/got@^11.8.8"
 > 		}
 > 	}
 > }
