@@ -56,6 +56,8 @@ const kOriginalResponse = Symbol('originalResponse');
 const kRetryTimeout = Symbol('retryTimeout');
 export const kIsNormalizedAlready = Symbol('isNormalizedAlready');
 
+const destroyedWithoutErrorCodes = new Set(['ECANCELED', 'ERR_STREAM_DESTROYED']);
+
 const supportsBrotli = is.string((process.versions as any).brotli);
 
 export interface Agents {
@@ -2708,9 +2710,19 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 				return;
 			}
 
-			this[kRequest]!.end((error?: Error | null) => {
+			const request = this[kRequest]!;
+
+			request.end((error?: NodeJS.ErrnoException | null) => {
 				if (error) {
 					// `ClientRequest.end()` can report the same failure as the request's `error` event. Route it through Got's retry handling without completing `_final`, so this Duplex does not finish a failed upload.
+					// A request destroyed without an error reports `ECANCELED` here before its `error` event carries the retryable cause, and `close` always follows that event.
+					if (destroyedWithoutErrorCodes.has(error.code!) && !(request as ClientRequest & {closed?: boolean}).closed) {
+						request.once('close', () => {
+							this._beforeError(error);
+						});
+						return;
+					}
+
 					this._beforeError(error);
 					return;
 				}
