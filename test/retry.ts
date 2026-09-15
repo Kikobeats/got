@@ -48,6 +48,44 @@ const createRequestWithEndError = (scenario: RequestEndErrorScenario): http.Clie
 	return request;
 };
 
+const createDestroyedRequest = ({emitsError, closed = false}: {emitsError: boolean; closed?: boolean}): http.ClientRequest => {
+	const request = new EventEmitter() as http.ClientRequest & {closed: boolean};
+	request.closed = closed;
+
+	// @ts-expect-error Mocking the behaviour of a ClientRequest
+	request.write = (_chunk: unknown, _encoding: unknown, callback?: () => void) => {
+		process.nextTick(() => callback?.());
+		return true;
+	};
+
+	// @ts-expect-error Mocking the behaviour of a ClientRequest
+	request.end = (callback: (error: Error) => void) => {
+		process.nextTick(() => {
+			callback(Object.assign(new Error('write ECANCELED'), {code: 'ECANCELED'}));
+
+			if (closed) {
+				return;
+			}
+
+			if (emitsError) {
+				request.emit('error', Object.assign(new Error('socket hang up'), {code: 'ECONNRESET'}));
+			}
+
+			request.closed = true;
+			request.emit('close');
+		});
+	};
+
+	request.abort = () => {};
+
+	request.destroy = () => {
+		request.destroyed = true;
+		return request;
+	};
+
+	return request;
+};
+
 const retryImmediately = {
 	calculateDelay: ({computedValue}: {computedValue: number}) => computedValue === 0 ? 0 : 1
 };
@@ -380,6 +418,116 @@ test('retries a refused connection and rejects with the connection error', async
 	t.is(error.code, 'ECONNREFUSED');
 	t.is(beforeRetryCount, 2);
 	t.is(error.request?.retryCount, 2);
+});
+
+test('retries the request error that follows an `ECANCELED` end callback', async t => {
+	let attemptCount = 0;
+	const retries: Array<string | undefined> = [];
+
+	const error = await t.throwsAsync<RequestError>(got.put('http://localhost', {
+		body: 'wow',
+		request: () => {
+			attemptCount++;
+			return createDestroyedRequest({emitsError: true});
+		},
+		retry: {
+			limit: 2,
+			...retryImmediately
+		},
+		hooks: {
+			beforeRetry: [
+				(_options, error) => {
+					retries.push(error?.code);
+				}
+			]
+		}
+	}), {
+		instanceOf: RequestError
+	});
+
+	t.is(error.code, 'ECONNRESET');
+	t.is(attemptCount, 3);
+	t.deepEqual(retries, ['ECONNRESET', 'ECONNRESET']);
+});
+
+test('rejects with `ECANCELED` when the destroyed request emits no error', async t => {
+	let attemptCount = 0;
+
+	const error = await t.throwsAsync<RequestError>(got.put('http://localhost', {
+		body: 'wow',
+		request: () => {
+			attemptCount++;
+			return createDestroyedRequest({emitsError: false});
+		},
+		retry: {
+			limit: 2,
+			...retryImmediately
+		}
+	}), {
+		instanceOf: RequestError
+	});
+
+	t.is(error.code, 'ECANCELED');
+	t.is(attemptCount, 1);
+});
+
+test('rejects with `ECANCELED` when the request already closed', async t => {
+	const error = await t.throwsAsync<RequestError>(got.put('http://localhost', {
+		body: 'wow',
+		request: () => createDestroyedRequest({emitsError: false, closed: true}),
+		retry: 0
+	}), {
+		instanceOf: RequestError
+	});
+
+	t.is(error.code, 'ECANCELED');
+});
+
+test('retries an upload whose socket is destroyed without an error', async t => {
+	const server = http.createServer(request => {
+		request.pause();
+	});
+
+	await new Promise<void>(resolve => {
+		server.listen(0, '127.0.0.1', resolve);
+	});
+
+	t.teardown(() => {
+		server.close();
+	});
+
+	const {port} = server.address() as {port: number};
+	const retries: Array<string | undefined> = [];
+
+	const error = await t.throwsAsync<RequestError>(got.put(`http://127.0.0.1:${port}`, {
+		body: Buffer.alloc(64 * 1024 * 1024),
+		agent: {http: new http.Agent({keepAlive: false})},
+		request: (url, options, callback) => {
+			const request = http.request(url, options, callback);
+			request.once('socket', socket => {
+				setTimeout(() => {
+					socket.destroy();
+				}, 100);
+			});
+			return request;
+		},
+		retry: {
+			limit: 1,
+			...retryImmediately
+		},
+		hooks: {
+			beforeRetry: [
+				(_options, error) => {
+					retries.push(error?.code);
+				}
+			]
+		}
+	}), {
+		instanceOf: RequestError
+	});
+
+	t.is(error.code, 'ECONNRESET');
+	t.deepEqual(retries, ['ECONNRESET']);
 });
 
 test('respects 413 Retry-After', withServer, async (t, server, got) => {

@@ -1,5 +1,5 @@
 import {promisify} from 'util';
-import {Duplex, Readable} from 'stream';
+import {Duplex, Writable, Readable} from 'stream';
 import {ReadStream} from 'fs';
 import {URL, URLSearchParams} from 'url';
 import {Socket} from 'net';
@@ -55,6 +55,8 @@ const kJobs = Symbol('jobs');
 const kOriginalResponse = Symbol('originalResponse');
 const kRetryTimeout = Symbol('retryTimeout');
 export const kIsNormalizedAlready = Symbol('isNormalizedAlready');
+
+const destroyedWithoutErrorCodes = new Set(['ECANCELED', 'ERR_STREAM_DESTROYED']);
 
 const supportsBrotli = is.string((process.versions as any).brotli);
 
@@ -1400,6 +1402,25 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 		// TODO: Remove this when targeting Node.js >= 12
 		this._progressCallbacks = [];
 
+		const unlockWrite = (): void => this._unlockWrite();
+		const lockWrite = (): void => this._lockWrite();
+
+		this.on('pipe', (source: Writable) => {
+			source.prependListener('data', unlockWrite);
+			source.on('data', lockWrite);
+
+			source.prependListener('end', unlockWrite);
+			source.on('end', lockWrite);
+		});
+
+		this.on('unpipe', (source: Writable) => {
+			source.off('data', unlockWrite);
+			source.off('data', lockWrite);
+
+			source.off('end', unlockWrite);
+			source.off('end', lockWrite);
+		});
+
 		this.on('pipe', source => {
 			if (source instanceof IncomingMessage) {
 				this.options.headers = {
@@ -1408,6 +1429,11 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 				};
 			}
 		});
+
+		const {json, body, form} = options;
+		if (json || body || form) {
+			this._lockWrite();
+		}
 
 		if (kIsNormalizedAlready in options) {
 			this.options = options as NormalizedOptions;
@@ -1861,6 +1887,30 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 		return normalizePromiseArguments(options as NormalizedOptions, defaults);
 	}
 
+	_lockWrite(): void {
+		const onLockedWrite = (): never => {
+			throw new TypeError('The payload has been already provided');
+		};
+
+		// `stream.pipeline()` ends the destination from its own `end` listener, after the lock is back in place (Node.js 17.3+). Ending without a payload writes nothing, so it stays allowed.
+		const endWithoutPayload = (...args: unknown[]): this => {
+			const [chunk] = args;
+			if (chunk !== undefined && chunk !== null && typeof chunk !== 'function') {
+				onLockedWrite();
+			}
+
+			return Duplex.prototype.end.apply(this, args as Parameters<Duplex['end']>) as this;
+		};
+
+		this.write = onLockedWrite;
+		this.end = endWithoutPayload;
+	}
+
+	_unlockWrite(): void {
+		this.write = super.write;
+		this.end = super.end;
+	}
+
 	async _finalizeBody(): Promise<void> {
 		const {options} = this;
 		const {headers} = options;
@@ -1938,6 +1988,10 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 					}
 				}
 			}
+		} else if (cannotHaveBody) {
+			this._lockWrite();
+		} else {
+			this._unlockWrite();
 		}
 
 		this[kBodySize] = Number(headers['content-length']) || undefined;
@@ -2205,11 +2259,19 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 			body.once('error', (error: NodeJS.ErrnoException) => {
 				this._beforeError(new UploadError(error, this));
 			});
-		} else if (!is.undefined(body)) {
-			this._writeRequest(body, undefined, () => {});
-			currentRequest.end();
-		} else if (this._cannotHaveBody || this._noPipe) {
-			currentRequest.end();
+		} else {
+			this._unlockWrite();
+
+			if (!is.undefined(body)) {
+				this._writeRequest(body, undefined, () => {});
+				currentRequest.end();
+
+				this._lockWrite();
+			} else if (this._cannotHaveBody || this._noPipe) {
+				currentRequest.end();
+
+				this._lockWrite();
+			}
 		}
 
 		this.emit('request', request);
@@ -2441,7 +2503,9 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 					void this._onResponse(requestOrResponse as IncomingMessageWithTimings);
 				});
 
+				this._unlockWrite();
 				this.end();
+				this._lockWrite();
 			} else {
 				void this._onResponse(requestOrResponse as IncomingMessageWithTimings);
 			}
@@ -2646,9 +2710,19 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 				return;
 			}
 
-			this[kRequest]!.end((error?: Error | null) => {
+			const request = this[kRequest]!;
+
+			request.end((error?: NodeJS.ErrnoException | null) => {
 				if (error) {
 					// `ClientRequest.end()` can report the same failure as the request's `error` event. Route it through Got's retry handling without completing `_final`, so this Duplex does not finish a failed upload.
+					// A request destroyed without an error reports `ECANCELED` here before its `error` event carries the retryable cause, and `close` always follows that event.
+					if (destroyedWithoutErrorCodes.has(error.code!) && !(request as ClientRequest & {closed?: boolean}).closed) {
+						request.once('close', () => {
+							this._beforeError(error);
+						});
+						return;
+					}
+
 					this._beforeError(error);
 					return;
 				}
