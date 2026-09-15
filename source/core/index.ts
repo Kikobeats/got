@@ -1365,7 +1365,7 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 	[kTriggerRead]: boolean;
 	[kBody]: Options['body'];
 	[kJobs]: Array<() => void>;
-	[kPipedSources]: Set<Readable>;
+	[kPipedSources]: Set<NodeJS.ReadableStream>;
 	[kRetryTimeout]?: NodeJS.Timeout;
 	[kBodySize]?: number;
 	[kServerResponsesPiped]: Set<ServerResponse>;
@@ -1412,7 +1412,7 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 		const lockWrite = (): void => this._lockWrite();
 
 		this.on('pipe', (source: Readable) => {
-			this[kPipedSources].add(source);
+			this._trackPipedSource(source);
 
 			source.prependListener('data', unlockWrite);
 			source.on('data', lockWrite);
@@ -1443,6 +1443,10 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 		const {json, body, form} = options;
 		if (json || body || form) {
 			this._lockWrite();
+		}
+
+		if (is.nodeStream(body)) {
+			this._trackPipedSource(body);
 		}
 
 		if (kIsNormalizedAlready in options) {
@@ -1904,8 +1908,7 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 
 		// `stream.pipeline()` ends the destination from its own `end` listener, after the lock is back in place (Node.js 17.3+). Ending without a chunk once every piped source has ended writes nothing, so it stays allowed.
 		const endWithoutPayload = (...args: unknown[]): this => {
-			const isPipingBody = [...this[kPipedSources]].some(source => 'readableEnded' in source && !source.readableEnded);
-			if (hasPayload(args[0]) || isPipingBody) {
+			if (hasPayload(args[0]) || this[kPipedSources].size > 0) {
 				onLockedWrite();
 			}
 
@@ -1914,6 +1917,24 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 
 		this.write = onLockedWrite;
 		this.end = endWithoutPayload;
+	}
+
+	_trackPipedSource(source: NodeJS.ReadableStream): void {
+		if (this[kPipedSources].has(source)) {
+			return;
+		}
+
+		this[kPipedSources].add(source);
+
+		const untrack = (): void => {
+			this[kPipedSources].delete(source);
+			source.removeListener('end', untrack);
+			source.removeListener('close', untrack);
+		};
+
+		// Registered first, so the source no longer counts once `stream.pipeline()` ends this stream from its own `end` listener.
+		source.prependListener('end', untrack);
+		source.prependListener('close', untrack);
 	}
 
 	_unlockWrite(): void {

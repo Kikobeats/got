@@ -194,6 +194,70 @@ test('throws when ending a stream while a source is still piped', withServer, as
 	t.is(await responsePromise, String('first chunk'.length + 'second chunk'.length));
 });
 
+const echoBodyLength: Handler = async (request, response) => {
+	response.end(String((await getStream.buffer(request)).length));
+};
+
+test('throws when ending a stream while its `body` stream is still streaming', withServer, async (t, server, got) => {
+	server.put('/', echoBodyLength);
+
+	const body = new stream.PassThrough();
+	const destination = got.stream.put({body});
+	const responsePromise = getStream(destination);
+
+	body.write('first chunk');
+
+	t.throws(() => {
+		destination.end();
+	}, {
+		message: 'The payload has been already provided'
+	});
+
+	body.end('second chunk');
+
+	t.is(await responsePromise, String('first chunk'.length + 'second chunk'.length));
+});
+
+test('throws when ending a stream while its `form-data` body is still streaming', withServer, async (t, server, got) => {
+	server.put('/', echoBodyLength);
+
+	const form = new FormData();
+	form.append('file', fs.createReadStream('package.json'));
+
+	const destination = got.stream.put({body: form});
+	const responsePromise = getStream(destination);
+
+	t.throws(() => {
+		destination.end();
+	}, {
+		message: 'The payload has been already provided'
+	});
+
+	t.true(Number(await responsePromise) > fs.statSync('package.json').size);
+});
+
+test('throws when ending a stream while a legacy stream is still piped', withServer, async (t, server, got) => {
+	server.put('/', echoBodyLength);
+
+	const source = new stream.Stream() as stream.Stream & NodeJS.ReadableStream;
+	const destination = got.stream.put('');
+	const responsePromise = getStream(destination);
+
+	source.pipe(destination);
+	source.emit('data', Buffer.from('abc'));
+
+	t.throws(() => {
+		destination.end();
+	}, {
+		message: 'The payload has been already provided'
+	});
+
+	source.emit('data', Buffer.from('de'));
+	source.emit('end');
+
+	t.is(await responsePromise, '5');
+});
+
 test('does not throw if using stream and passing a json option', withServer, async (t, server, got) => {
 	server.post('/', postHandler);
 
