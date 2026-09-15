@@ -153,22 +153,22 @@ test('ending a stream without a payload does not throw', withServer, async (t, s
 	t.is(await getStream(stream), 'ok');
 });
 
-test('ending a stream with an empty payload does not throw', withServer, async (t, server, got) => {
+test('throws when ending a locked stream with an empty chunk', withServer, (t, server, got) => {
 	server.get('/', (_request, response) => {
 		response.end('ok');
 	});
 
-	const streams = [got.stream(''), got.stream('')];
+	for (const chunk of ['', Buffer.alloc(0)]) {
+		const stream = got.stream('');
 
-	t.notThrows(() => {
-		streams[0].end('');
-	});
+		t.throws(() => {
+			stream.end(chunk);
+		}, {
+			message: 'The payload has been already provided'
+		});
 
-	t.notThrows(() => {
-		streams[1].end(Buffer.alloc(0));
-	});
-
-	t.deepEqual(await Promise.all(streams.map(async stream => getStream(stream))), ['ok', 'ok']);
+		stream.destroy();
+	}
 });
 
 test('throws when ending a stream while a source is still piped', withServer, async (t, server, got) => {

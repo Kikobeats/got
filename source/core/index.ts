@@ -57,15 +57,10 @@ const kOriginalResponse = Symbol('originalResponse');
 const kRetryTimeout = Symbol('retryTimeout');
 export const kIsNormalizedAlready = Symbol('isNormalizedAlready');
 
-const destroyedWithoutErrorCodes = new Set(['ECANCELED', 'ERR_STREAM_DESTROYED']);
+const deferredEndErrorCodes = new Set(['ECANCELED', 'ERR_STREAM_DESTROYED', 'ERR_SOCKET_CLOSED']);
+const deferredEndErrorTimeout = 1000;
 
-const hasPayload = (chunk: unknown): boolean => {
-	if (chunk === undefined || chunk === null || typeof chunk === 'function') {
-		return false;
-	}
-
-	return !((typeof chunk === 'string' || chunk instanceof Uint8Array) && chunk.length === 0);
-};
+const hasPayload = (chunk: unknown): boolean => chunk !== undefined && chunk !== null && typeof chunk !== 'function';
 
 const supportsBrotli = is.string((process.versions as any).brotli);
 
@@ -1907,7 +1902,7 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 			throw new TypeError('The payload has been already provided');
 		};
 
-		// `stream.pipeline()` ends the destination from its own `end` listener, after the lock is back in place (Node.js 17.3+). Ending without a payload once every piped source has ended writes nothing, so it stays allowed.
+		// `stream.pipeline()` ends the destination from its own `end` listener, after the lock is back in place (Node.js 17.3+). Ending without a chunk once every piped source has ended writes nothing, so it stays allowed.
 		const endWithoutPayload = (...args: unknown[]): this => {
 			const isPipingBody = [...this[kPipedSources]].some(source => 'readableEnded' in source && !source.readableEnded);
 			if (hasPayload(args[0]) || isPipingBody) {
@@ -2730,11 +2725,16 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 			request.end((error?: NodeJS.ErrnoException | null) => {
 				if (error) {
 					// `ClientRequest.end()` can report the same failure as the request's `error` event. Route it through Got's retry handling without completing `_final`, so this Duplex does not finish a failed upload.
-					// A request destroyed without an error reports `ECANCELED` here before its `error` event carries the retryable cause. Node.js emits that event from `process.nextTick`, so it has run by `setImmediate`, which also settles requests whose socket never emits it.
-					if (destroyedWithoutErrorCodes.has(error.code!)) {
-						setImmediate(() => {
+					// A destroyed socket reports `ECANCELED` or `ERR_SOCKET_CLOSED` here before the request's `error` event carries the retryable cause, and `close` always follows that event. The timeout settles requests whose socket never emits `close`.
+					if (deferredEndErrorCodes.has(error.code!)) {
+						const reportEndError = (): void => {
+							clearTimeout(fallback);
+							request.off('close', reportEndError);
 							this._beforeError(error);
-						});
+						};
+
+						const fallback = setTimeout(reportEndError, deferredEndErrorTimeout);
+						request.once('close', reportEndError);
 						return;
 					}
 

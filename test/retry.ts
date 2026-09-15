@@ -1,8 +1,9 @@
 import {EventEmitter} from 'events';
-import {PassThrough as PassThroughStream} from 'stream';
+import {PassThrough as PassThroughStream, Duplex} from 'stream';
+import net = require('net');
 import {Socket, createServer} from 'net';
 import http = require('http');
-import test from 'ava';
+import test, {ExecutionContext} from 'ava';
 import is from '@sindresorhus/is';
 import {Handler} from 'express';
 import getStream = require('get-stream');
@@ -523,6 +524,181 @@ test('retries an upload whose socket is destroyed without an error', async t => 
 	});
 
 	t.is(error.code, 'ECONNRESET');
+	t.deepEqual(retries, ['ECONNRESET']);
+});
+
+const listenOnLocalhost = async (t: ExecutionContext, handler: http.RequestListener): Promise<number> => {
+	const server = http.createServer(handler);
+
+	await new Promise<void>(resolve => {
+		server.listen(0, '127.0.0.1', resolve);
+	});
+
+	t.teardown(() => {
+		server.close();
+	});
+
+	return (server.address() as net.AddressInfo).port;
+};
+
+const respondOk: http.RequestListener = (request, response) => {
+	request.resume();
+	request.on('end', () => {
+		response.end('ok');
+	});
+};
+
+const requestDestroyedOnConnect = async (port: number, options: {method: 'PUT' | 'GET'; body?: string}): Promise<{body: string; retries: Array<string | undefined>}> => {
+	let attemptCount = 0;
+	const retries: Array<string | undefined> = [];
+
+	const {body} = await got(`http://127.0.0.1:${port}`, {
+		...options,
+		agent: {http: new http.Agent({keepAlive: false})},
+		request: (url, requestOptions, callback) => {
+			const request = http.request(url, requestOptions, callback);
+
+			if (attemptCount++ === 0) {
+				request.once('socket', socket => {
+					socket.once('connect', () => {
+						socket.destroy();
+					});
+				});
+			}
+
+			return request;
+		},
+		retry: {
+			limit: 1,
+			...retryImmediately
+		},
+		hooks: {
+			beforeRetry: [
+				(_options, error) => {
+					retries.push(error?.code);
+				}
+			]
+		}
+	});
+
+	return {body, retries};
+};
+
+test('retries an upload whose socket is destroyed when it connects', async t => {
+	const port = await listenOnLocalhost(t, respondOk);
+	const {body, retries} = await requestDestroyedOnConnect(port, {method: 'PUT', body: 'wow'});
+
+	t.is(body, 'ok');
+	t.deepEqual(retries, ['ECONNRESET']);
+});
+
+test('retries a request without a body whose socket is destroyed when it connects', async t => {
+	const port = await listenOnLocalhost(t, respondOk);
+	const {body, retries} = await requestDestroyedOnConnect(port, {method: 'GET'});
+
+	t.is(body, 'ok');
+	t.deepEqual(retries, ['ECONNRESET']);
+});
+
+class DelayedCloseSocket extends Duplex {
+	connecting = true;
+
+	private readonly inner: net.Socket;
+
+	constructor(port: number) {
+		super();
+
+		this.inner = net.connect(port, '127.0.0.1');
+		this.inner.on('data', (chunk: Buffer) => {
+			if (!this.push(chunk)) {
+				this.inner.pause();
+			}
+		});
+		this.inner.on('end', () => this.push(null));
+		this.inner.on('error', (error: Error) => this.destroy(error));
+		this.inner.once('connect', () => {
+			this.connecting = false;
+			this.emit('connect');
+		});
+	}
+
+	_read(): void {
+		this.inner.resume();
+	}
+
+	_write(chunk: Buffer, encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+		this.inner.write(chunk, encoding, callback);
+	}
+
+	_final(callback: () => void): void {
+		this.inner.end(callback);
+	}
+
+	_destroy(error: Error | null, callback: (error: Error | null) => void): void {
+		this.inner.destroy();
+		setTimeout(() => {
+			callback(error);
+		}, 5);
+	}
+
+	setNoDelay(): void {}
+
+	setKeepAlive(): void {}
+
+	setTimeout(): this {
+		return this;
+	}
+
+	ref(): void {}
+
+	unref(): void {}
+}
+
+test('retries an upload whose socket closes asynchronously after being destroyed', async t => {
+	let hits = 0;
+	const port = await listenOnLocalhost(t, (request, response) => {
+		if (hits++ === 0) {
+			request.pause();
+			return;
+		}
+
+		respondOk(request, response);
+	});
+
+	let sockets = 0;
+	const retries: Array<string | undefined> = [];
+
+	const {body} = await got.put(`http://127.0.0.1:${port}`, {
+		body: Buffer.alloc(8 * 1024 * 1024),
+		request: (url, options, callback) => http.request(url, {
+			...options,
+			agent: undefined,
+			createConnection: () => {
+				const socket = new DelayedCloseSocket(port);
+
+				if (sockets++ === 0) {
+					setTimeout(() => {
+						socket.destroy();
+					}, 100);
+				}
+
+				return socket as unknown as net.Socket;
+			}
+		}, callback),
+		retry: {
+			limit: 1,
+			...retryImmediately
+		},
+		hooks: {
+			beforeRetry: [
+				(_options, error) => {
+					retries.push(error?.code);
+				}
+			]
+		}
+	});
+
+	t.is(body, 'ok');
 	t.deepEqual(retries, ['ECONNRESET']);
 });
 
