@@ -1,5 +1,5 @@
 import {promisify} from 'util';
-import {Duplex, Readable, PassThrough} from 'stream';
+import {Duplex, Readable} from 'stream';
 import {ReadStream} from 'fs';
 import {URL, URLSearchParams} from 'url';
 import {Socket} from 'net';
@@ -21,6 +21,7 @@ import isFormData from './utils/is-form-data';
 import proxyEvents from './utils/proxy-events';
 import timedOut, {Delays, TimeoutError as TimedOutTimeoutError} from './utils/timed-out';
 import urlToOptions from './utils/url-to-options';
+import trackCloneCompletion from './utils/track-clone-completion';
 import optionsToUrl, {URLOptions} from './utils/options-to-url';
 import WeakableMap from './utils/weakable-map';
 import getBuffer from './utils/get-buffer';
@@ -2231,12 +2232,7 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 				// TODO: Fix `cacheable-response`
 				(response as any)._readableState.autoDestroy = false;
 
-				if (response instanceof PassThrough) {
-					// `clone-response` copies `complete` before the body has been piped, so it would stay `false` forever and `aborted` would be `true` once a keep-alive request is released.
-					Object.defineProperty(response, 'complete', {
-						get: () => response.writableEnded
-					});
-				}
+				trackCloneCompletion(response);
 
 				if (request) {
 					(await request).emit('cacheableResponse', response);
