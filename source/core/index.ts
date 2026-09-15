@@ -2725,16 +2725,18 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 			request.end((error?: NodeJS.ErrnoException | null) => {
 				if (error) {
 					// `ClientRequest.end()` can report the same failure as the request's `error` event. Route it through Got's retry handling without completing `_final`, so this Duplex does not finish a failed upload.
-					// A destroyed socket reports `ECANCELED` or `ERR_SOCKET_CLOSED` here before the request's `error` event carries the retryable cause, and `close` always follows that event. The timeout settles requests whose socket never emits `close`.
-					if (deferredEndErrorCodes.has(error.code!)) {
+					// A destroyed socket reports `ECANCELED` or `ERR_SOCKET_CLOSED` here before the request's `error` event carries the retryable cause, and `close` always follows that event. The timeout settles requests whose socket never emits `close`; closing this stream first cancels it.
+					if (deferredEndErrorCodes.has(error.code!) && !(request as ClientRequest & {closed?: boolean}).closed) {
 						const reportEndError = (): void => {
 							clearTimeout(fallback);
 							request.off('close', reportEndError);
+							this.off('close', reportEndError);
 							this._beforeError(error);
 						};
 
 						const fallback = setTimeout(reportEndError, deferredEndErrorTimeout);
 						request.once('close', reportEndError);
+						this.once('close', reportEndError);
 						return;
 					}
 

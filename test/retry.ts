@@ -1,4 +1,5 @@
 import {EventEmitter} from 'events';
+import childProcess = require('child_process');
 import {PassThrough as PassThroughStream, Duplex} from 'stream';
 import net = require('net');
 import {Socket, createServer} from 'net';
@@ -49,8 +50,14 @@ const createRequestWithEndError = (scenario: RequestEndErrorScenario): http.Clie
 	return request;
 };
 
-const createDestroyedRequest = ({emitsError, emitsClose = true}: {emitsError: boolean; emitsClose?: boolean}): http.ClientRequest => {
-	const request = new EventEmitter() as http.ClientRequest;
+const createDestroyedRequest = ({emitsError, emitsClose = true, closesBeforeEnd = false}: {emitsError: boolean; emitsClose?: boolean; closesBeforeEnd?: boolean}): http.ClientRequest => {
+	const request = new EventEmitter() as http.ClientRequest & {closed: boolean};
+	request.closed = false;
+
+	const close = () => {
+		request.closed = true;
+		request.emit('close');
+	};
 
 	// @ts-expect-error Mocking the behaviour of a ClientRequest
 	request.write = (_chunk: unknown, _encoding: unknown, callback?: () => void) => {
@@ -61,14 +68,18 @@ const createDestroyedRequest = ({emitsError, emitsClose = true}: {emitsError: bo
 	// @ts-expect-error Mocking the behaviour of a ClientRequest
 	request.end = (callback: (error: Error) => void) => {
 		process.nextTick(() => {
+			if (closesBeforeEnd) {
+				close();
+			}
+
 			callback(Object.assign(new Error('write ECANCELED'), {code: 'ECANCELED'}));
 
 			if (emitsError) {
 				request.emit('error', Object.assign(new Error('socket hang up'), {code: 'ECONNRESET'}));
 			}
 
-			if (emitsClose) {
-				request.emit('close');
+			if (emitsClose && !closesBeforeEnd) {
+				close();
 			}
 		});
 	};
@@ -525,6 +536,52 @@ test('retries an upload whose socket is destroyed without an error', async t => 
 
 	t.is(error.code, 'ECONNRESET');
 	t.deepEqual(retries, ['ECONNRESET']);
+});
+
+test('rejects without waiting when the request closed before its end callback', async t => {
+	const start = Date.now();
+
+	const error = await t.throwsAsync<RequestError>(got.put('http://localhost', {
+		body: 'wow',
+		request: () => createDestroyedRequest({emitsError: false, closesBeforeEnd: true}),
+		retry: 0
+	}), {
+		instanceOf: RequestError
+	});
+
+	t.is(error.code, 'ECANCELED');
+	t.true(Date.now() - start < 500, `took ${Date.now() - start}ms`);
+});
+
+test('a pending end error fallback does not keep the process alive', async t => {
+	const script = `
+		const {EventEmitter} = require('events');
+		const got = require(${JSON.stringify(require.resolve('../source'))}).default;
+		const request = new EventEmitter();
+		request.write = (chunk, encoding, callback) => process.nextTick(() => callback && callback());
+		request.end = callback => process.nextTick(() => {
+			callback(Object.assign(new Error('write ECANCELED'), {code: 'ECANCELED'}));
+			request.emit('error', Object.assign(new Error('socket hang up'), {code: 'ECONNRESET'}));
+		});
+		request.abort = () => {};
+		request.destroy = () => request;
+		got.put('http://localhost', {body: 'wow', request: () => request, retry: 0}).catch(error => console.log(error.code));
+	`;
+
+	const start = Date.now();
+	const {stdout} = await new Promise<{stdout: string}>((resolve, reject) => {
+		childProcess.execFile(process.execPath, ['-e', script], (error, stdout) => {
+			if (error) {
+				reject(error);
+				return;
+			}
+
+			resolve({stdout});
+		});
+	});
+
+	t.is(stdout.trim(), 'ECONNRESET');
+	t.true(Date.now() - start < 900, `took ${Date.now() - start}ms`);
 });
 
 const listenOnLocalhost = async (t: ExecutionContext, handler: http.RequestListener): Promise<number> => {

@@ -25,6 +25,7 @@ test('`complete` of a snapshot clone follows the piped body', t => {
 
 	trackCloneCompletion(clone);
 	t.false(clone.complete);
+	t.true(Object.keys(clone).includes('complete'));
 
 	clone.end('body');
 	t.true(clone.complete);
