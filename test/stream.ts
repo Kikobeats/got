@@ -2,6 +2,8 @@ import {promisify} from 'util';
 import fs = require('fs');
 import {PassThrough as PassThroughStream} from 'stream';
 import stream = require('stream');
+import http = require('http');
+import {AddressInfo} from 'net';
 import test from 'ava';
 import {Handler} from 'express';
 import toReadableStream = require('to-readable-stream');
@@ -67,6 +69,88 @@ test('returns writeable stream', withServer, async (t, server, got) => {
 	stream.end('wow');
 
 	t.is(await promise, 'wow');
+});
+
+test('throws on write if body is specified', withServer, (t, server, got) => {
+	server.post('/', postHandler);
+
+	const streams = [
+		got.stream.post({body: 'wow'}),
+		got.stream.post({json: {}}),
+		got.stream.post({form: {}})
+	];
+
+	for (const stream of streams) {
+		t.throws(() => {
+			stream.end('wow');
+		}, {
+			message: 'The payload has been already provided'
+		});
+
+		stream.destroy();
+	}
+});
+
+test('throws on write if no payload method is present', withServer, (t, server, got) => {
+	server.post('/', postHandler);
+
+	const stream = got.stream.get('');
+
+	t.throws(() => {
+		stream.end('wow');
+	}, {
+		message: 'The payload has been already provided'
+	});
+
+	stream.destroy();
+});
+
+test('data written after the body is never sent', async t => {
+	const requests: string[] = [];
+	const server = http.createServer((request, response) => {
+		let body = '';
+		request.setEncoding('utf8');
+		request.on('data', (chunk: string) => {
+			body += chunk;
+		});
+		request.on('end', () => {
+			requests.push(`${request.method!} ${request.url!} ${body}`);
+			response.end('ok');
+		});
+	});
+
+	await new Promise<void>(resolve => {
+		server.listen(0, '127.0.0.1', resolve);
+	});
+	t.teardown(() => {
+		server.close();
+	});
+
+	const {port} = server.address() as AddressInfo;
+	const stream = got.stream.post(`http://127.0.0.1:${port}/upload`, {body: 'abc'});
+
+	t.throws(() => {
+		stream.write('GET /injected HTTP/1.1\r\nHost: localhost\r\n\r\n');
+	}, {
+		message: 'The payload has been already provided'
+	});
+
+	t.is(await getStream(stream), 'ok');
+	t.deepEqual(requests, ['POST /upload abc']);
+});
+
+test('ending a stream without a payload does not throw', withServer, async (t, server, got) => {
+	server.get('/', (_request, response) => {
+		response.end('ok');
+	});
+
+	const stream = got.stream('');
+
+	t.notThrows(() => {
+		stream.end();
+	});
+
+	t.is(await getStream(stream), 'ok');
 });
 
 test('does not throw if using stream and passing a json option', withServer, async (t, server, got) => {
