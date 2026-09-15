@@ -48,9 +48,8 @@ const createRequestWithEndError = (scenario: RequestEndErrorScenario): http.Clie
 	return request;
 };
 
-const createDestroyedRequest = ({emitsError, closed = false}: {emitsError: boolean; closed?: boolean}): http.ClientRequest => {
-	const request = new EventEmitter() as http.ClientRequest & {closed: boolean};
-	request.closed = closed;
+const createDestroyedRequest = ({emitsError, emitsClose = true}: {emitsError: boolean; emitsClose?: boolean}): http.ClientRequest => {
+	const request = new EventEmitter() as http.ClientRequest;
 
 	// @ts-expect-error Mocking the behaviour of a ClientRequest
 	request.write = (_chunk: unknown, _encoding: unknown, callback?: () => void) => {
@@ -63,16 +62,13 @@ const createDestroyedRequest = ({emitsError, closed = false}: {emitsError: boole
 		process.nextTick(() => {
 			callback(Object.assign(new Error('write ECANCELED'), {code: 'ECANCELED'}));
 
-			if (closed) {
-				return;
-			}
-
 			if (emitsError) {
 				request.emit('error', Object.assign(new Error('socket hang up'), {code: 'ECONNRESET'}));
 			}
 
-			request.closed = true;
-			request.emit('close');
+			if (emitsClose) {
+				request.emit('close');
+			}
 		});
 	};
 
@@ -471,10 +467,10 @@ test('rejects with `ECANCELED` when the destroyed request emits no error', async
 	t.is(attemptCount, 1);
 });
 
-test('rejects with `ECANCELED` when the request already closed', async t => {
+test('rejects with `ECANCELED` when the destroyed request emits neither error nor close', async t => {
 	const error = await t.throwsAsync<RequestError>(got.put('http://localhost', {
 		body: 'wow',
-		request: () => createDestroyedRequest({emitsError: false, closed: true}),
+		request: () => createDestroyedRequest({emitsError: false, emitsClose: false}),
 		retry: 0
 	}), {
 		instanceOf: RequestError

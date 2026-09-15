@@ -1,5 +1,5 @@
 import {promisify} from 'util';
-import {Duplex, Writable, Readable} from 'stream';
+import {Duplex, Readable} from 'stream';
 import {ReadStream} from 'fs';
 import {URL, URLSearchParams} from 'url';
 import {Socket} from 'net';
@@ -52,11 +52,20 @@ const kStopReading = Symbol('stopReading');
 const kTriggerRead = Symbol('triggerRead');
 const kBody = Symbol('body');
 const kJobs = Symbol('jobs');
+const kPipedSources = Symbol('pipedSources');
 const kOriginalResponse = Symbol('originalResponse');
 const kRetryTimeout = Symbol('retryTimeout');
 export const kIsNormalizedAlready = Symbol('isNormalizedAlready');
 
 const destroyedWithoutErrorCodes = new Set(['ECANCELED', 'ERR_STREAM_DESTROYED']);
+
+const hasPayload = (chunk: unknown): boolean => {
+	if (chunk === undefined || chunk === null || typeof chunk === 'function') {
+		return false;
+	}
+
+	return !((typeof chunk === 'string' || chunk instanceof Uint8Array) && chunk.length === 0);
+};
 
 const supportsBrotli = is.string((process.versions as any).brotli);
 
@@ -1361,6 +1370,7 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 	[kTriggerRead]: boolean;
 	[kBody]: Options['body'];
 	[kJobs]: Array<() => void>;
+	[kPipedSources]: Set<Readable>;
 	[kRetryTimeout]?: NodeJS.Timeout;
 	[kBodySize]?: number;
 	[kServerResponsesPiped]: Set<ServerResponse>;
@@ -1397,6 +1407,7 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 		this[kStopReading] = false;
 		this[kTriggerRead] = false;
 		this[kJobs] = [];
+		this[kPipedSources] = new Set();
 		this.retryCount = 0;
 
 		// TODO: Remove this when targeting Node.js >= 12
@@ -1405,7 +1416,9 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 		const unlockWrite = (): void => this._unlockWrite();
 		const lockWrite = (): void => this._lockWrite();
 
-		this.on('pipe', (source: Writable) => {
+		this.on('pipe', (source: Readable) => {
+			this[kPipedSources].add(source);
+
 			source.prependListener('data', unlockWrite);
 			source.on('data', lockWrite);
 
@@ -1413,7 +1426,9 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 			source.on('end', lockWrite);
 		});
 
-		this.on('unpipe', (source: Writable) => {
+		this.on('unpipe', (source: Readable) => {
+			this[kPipedSources].delete(source);
+
 			source.off('data', unlockWrite);
 			source.off('data', lockWrite);
 
@@ -1892,10 +1907,10 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 			throw new TypeError('The payload has been already provided');
 		};
 
-		// `stream.pipeline()` ends the destination from its own `end` listener, after the lock is back in place (Node.js 17.3+). Ending without a payload writes nothing, so it stays allowed.
+		// `stream.pipeline()` ends the destination from its own `end` listener, after the lock is back in place (Node.js 17.3+). Ending without a payload once every piped source has ended writes nothing, so it stays allowed.
 		const endWithoutPayload = (...args: unknown[]): this => {
-			const [chunk] = args;
-			if (chunk !== undefined && chunk !== null && typeof chunk !== 'function') {
+			const isPipingBody = [...this[kPipedSources]].some(source => 'readableEnded' in source && !source.readableEnded);
+			if (hasPayload(args[0]) || isPipingBody) {
 				onLockedWrite();
 			}
 
@@ -2715,9 +2730,9 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 			request.end((error?: NodeJS.ErrnoException | null) => {
 				if (error) {
 					// `ClientRequest.end()` can report the same failure as the request's `error` event. Route it through Got's retry handling without completing `_final`, so this Duplex does not finish a failed upload.
-					// A request destroyed without an error reports `ECANCELED` here before its `error` event carries the retryable cause, and `close` always follows that event.
-					if (destroyedWithoutErrorCodes.has(error.code!) && !(request as ClientRequest & {closed?: boolean}).closed) {
-						request.once('close', () => {
+					// A request destroyed without an error reports `ECANCELED` here before its `error` event carries the retryable cause. Node.js emits that event from `process.nextTick`, so it has run by `setImmediate`, which also settles requests whose socket never emits it.
+					if (destroyedWithoutErrorCodes.has(error.code!)) {
+						setImmediate(() => {
 							this._beforeError(error);
 						});
 						return;
@@ -2730,7 +2745,7 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 				this[kBodySize] = this[kUploadedSize];
 
 				this.emit('uploadProgress', this.uploadProgress);
-				this[kRequest]!.emit('upload-complete');
+				request.emit('upload-complete');
 
 				callback();
 			});

@@ -153,6 +153,47 @@ test('ending a stream without a payload does not throw', withServer, async (t, s
 	t.is(await getStream(stream), 'ok');
 });
 
+test('ending a stream with an empty payload does not throw', withServer, async (t, server, got) => {
+	server.get('/', (_request, response) => {
+		response.end('ok');
+	});
+
+	const streams = [got.stream(''), got.stream('')];
+
+	t.notThrows(() => {
+		streams[0].end('');
+	});
+
+	t.notThrows(() => {
+		streams[1].end(Buffer.alloc(0));
+	});
+
+	t.deepEqual(await Promise.all(streams.map(async stream => getStream(stream))), ['ok', 'ok']);
+});
+
+test('throws when ending a stream while a source is still piped', withServer, async (t, server, got) => {
+	server.put('/', async (request, response) => {
+		response.end(String((await getStream.buffer(request)).length));
+	});
+
+	const source = new stream.PassThrough();
+	const destination = got.stream.put('');
+	const responsePromise = getStream(destination);
+
+	source.pipe(destination);
+	source.write('first chunk');
+
+	t.throws(() => {
+		destination.end();
+	}, {
+		message: 'The payload has been already provided'
+	});
+
+	source.end('second chunk');
+
+	t.is(await responsePromise, String('first chunk'.length + 'second chunk'.length));
+});
+
 test('does not throw if using stream and passing a json option', withServer, async (t, server, got) => {
 	server.post('/', postHandler);
 
