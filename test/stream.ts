@@ -258,6 +258,55 @@ test('throws when ending a stream while a legacy stream is still piped', withSer
 	t.is(await responsePromise, '5');
 });
 
+test('a long-lived source keeps no listeners after being unpiped from or destroying got streams', withServer, async (t, server, got) => {
+	server.post('/', echoBodyLength);
+
+	const warnings: Error[] = [];
+	const onWarning = (warning: Error) => {
+		if (warning.name === 'MaxListenersExceededWarning') {
+			warnings.push(warning);
+		}
+	};
+
+	process.on('warning', onWarning);
+	t.teardown(() => {
+		process.off('warning', onWarning);
+	});
+
+	const source = new stream.PassThrough();
+	const listenerCounts = () => ({
+		end: source.listenerCount('end'),
+		close: source.listenerCount('close'),
+		data: source.listenerCount('data')
+	});
+	const initial = listenerCounts();
+
+	const pipeAndDestroy = async (unpipeFirst: boolean) => {
+		const destination = got.stream.post('');
+		const closed = pEvent(destination, 'close');
+		source.pipe(destination, {end: false});
+
+		if (unpipeFirst) {
+			source.unpipe(destination);
+		}
+
+		destination.destroy();
+		await closed;
+	};
+
+	for (let index = 0; index < 20; index++) {
+		// eslint-disable-next-line no-await-in-loop
+		await pipeAndDestroy(index % 2 === 0);
+	}
+
+	await new Promise(resolve => {
+		setImmediate(resolve);
+	});
+
+	t.deepEqual(listenerCounts(), initial);
+	t.deepEqual(warnings.map(warning => warning.message), []);
+});
+
 test('does not throw if using stream and passing a json option', withServer, async (t, server, got) => {
 	server.post('/', postHandler);
 

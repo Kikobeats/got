@@ -1365,7 +1365,7 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 	[kTriggerRead]: boolean;
 	[kBody]: Options['body'];
 	[kJobs]: Array<() => void>;
-	[kPipedSources]: Set<NodeJS.ReadableStream>;
+	[kPipedSources]: Map<NodeJS.ReadableStream, () => void>;
 	[kRetryTimeout]?: NodeJS.Timeout;
 	[kBodySize]?: number;
 	[kServerResponsesPiped]: Set<ServerResponse>;
@@ -1402,7 +1402,7 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 		this[kStopReading] = false;
 		this[kTriggerRead] = false;
 		this[kJobs] = [];
-		this[kPipedSources] = new Set();
+		this[kPipedSources] = new Map();
 		this.retryCount = 0;
 
 		// TODO: Remove this when targeting Node.js >= 12
@@ -1422,7 +1422,7 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 		});
 
 		this.on('unpipe', (source: Readable) => {
-			this[kPipedSources].delete(source);
+			this[kPipedSources].get(source)?.();
 
 			source.off('data', unlockWrite);
 			source.off('data', lockWrite);
@@ -1924,17 +1924,19 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 			return;
 		}
 
-		this[kPipedSources].add(source);
-
 		const untrack = (): void => {
 			this[kPipedSources].delete(source);
 			source.removeListener('end', untrack);
 			source.removeListener('close', untrack);
+			this.removeListener('close', untrack);
 		};
+
+		this[kPipedSources].set(source, untrack);
 
 		// Registered first, so the source no longer counts once `stream.pipeline()` ends this stream from its own `end` listener.
 		source.prependListener('end', untrack);
 		source.prependListener('close', untrack);
+		this.once('close', untrack);
 	}
 
 	_unlockWrite(): void {
