@@ -153,6 +153,160 @@ test('ending a stream without a payload does not throw', withServer, async (t, s
 	t.is(await getStream(stream), 'ok');
 });
 
+test('throws when ending a locked stream with an empty chunk', withServer, (t, server, got) => {
+	server.get('/', (_request, response) => {
+		response.end('ok');
+	});
+
+	for (const chunk of ['', Buffer.alloc(0)]) {
+		const stream = got.stream('');
+
+		t.throws(() => {
+			stream.end(chunk);
+		}, {
+			message: 'The payload has been already provided'
+		});
+
+		stream.destroy();
+	}
+});
+
+test('throws when ending a stream while a source is still piped', withServer, async (t, server, got) => {
+	server.put('/', async (request, response) => {
+		response.end(String((await getStream.buffer(request)).length));
+	});
+
+	const source = new stream.PassThrough();
+	const destination = got.stream.put('');
+	const responsePromise = getStream(destination);
+
+	source.pipe(destination);
+	source.write('first chunk');
+
+	t.throws(() => {
+		destination.end();
+	}, {
+		message: 'The payload has been already provided'
+	});
+
+	source.end('second chunk');
+
+	t.is(await responsePromise, String('first chunk'.length + 'second chunk'.length));
+});
+
+const echoBodyLength: Handler = async (request, response) => {
+	response.end(String((await getStream.buffer(request)).length));
+};
+
+test('throws when ending a stream while its `body` stream is still streaming', withServer, async (t, server, got) => {
+	server.put('/', echoBodyLength);
+
+	const body = new stream.PassThrough();
+	const destination = got.stream.put({body});
+	const responsePromise = getStream(destination);
+
+	body.write('first chunk');
+
+	t.throws(() => {
+		destination.end();
+	}, {
+		message: 'The payload has been already provided'
+	});
+
+	body.end('second chunk');
+
+	t.is(await responsePromise, String('first chunk'.length + 'second chunk'.length));
+});
+
+test('throws when ending a stream while its `form-data` body is still streaming', withServer, async (t, server, got) => {
+	server.put('/', echoBodyLength);
+
+	const form = new FormData();
+	form.append('file', fs.createReadStream('package.json'));
+
+	const destination = got.stream.put({body: form});
+	const responsePromise = getStream(destination);
+
+	t.throws(() => {
+		destination.end();
+	}, {
+		message: 'The payload has been already provided'
+	});
+
+	t.true(Number(await responsePromise) > fs.statSync('package.json').size);
+});
+
+test('throws when ending a stream while a legacy stream is still piped', withServer, async (t, server, got) => {
+	server.put('/', echoBodyLength);
+
+	const source = new stream.Stream() as stream.Stream & NodeJS.ReadableStream;
+	const destination = got.stream.put('');
+	const responsePromise = getStream(destination);
+
+	source.pipe(destination);
+	source.emit('data', Buffer.from('abc'));
+
+	t.throws(() => {
+		destination.end();
+	}, {
+		message: 'The payload has been already provided'
+	});
+
+	source.emit('data', Buffer.from('de'));
+	source.emit('end');
+
+	t.is(await responsePromise, '5');
+});
+
+test('a long-lived source keeps no listeners after being unpiped from or destroying got streams', withServer, async (t, server, got) => {
+	server.post('/', echoBodyLength);
+
+	const warnings: Error[] = [];
+	const onWarning = (warning: Error) => {
+		if (warning.name === 'MaxListenersExceededWarning') {
+			warnings.push(warning);
+		}
+	};
+
+	process.on('warning', onWarning);
+	t.teardown(() => {
+		process.off('warning', onWarning);
+	});
+
+	const source = new stream.PassThrough();
+	const listenerCounts = () => ({
+		end: source.listenerCount('end'),
+		close: source.listenerCount('close'),
+		data: source.listenerCount('data')
+	});
+	const initial = listenerCounts();
+
+	const pipeAndDestroy = async (unpipeFirst: boolean) => {
+		const destination = got.stream.post('');
+		const closed = pEvent(destination, 'close');
+		source.pipe(destination, {end: false});
+
+		if (unpipeFirst) {
+			source.unpipe(destination);
+		}
+
+		destination.destroy();
+		await closed;
+	};
+
+	for (let index = 0; index < 20; index++) {
+		// eslint-disable-next-line no-await-in-loop
+		await pipeAndDestroy(index % 2 === 0);
+	}
+
+	await new Promise(resolve => {
+		setImmediate(resolve);
+	});
+
+	t.deepEqual(listenerCounts(), initial);
+	t.deepEqual(warnings.map(warning => warning.message), []);
+});
+
 test('does not throw if using stream and passing a json option', withServer, async (t, server, got) => {
 	server.post('/', postHandler);
 

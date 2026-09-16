@@ -1,8 +1,10 @@
 import {EventEmitter} from 'events';
-import {PassThrough as PassThroughStream} from 'stream';
+import childProcess = require('child_process');
+import {PassThrough as PassThroughStream, Duplex} from 'stream';
+import net = require('net');
 import {Socket, createServer} from 'net';
 import http = require('http');
-import test from 'ava';
+import test, {ExecutionContext} from 'ava';
 import is from '@sindresorhus/is';
 import {Handler} from 'express';
 import getStream = require('get-stream');
@@ -48,9 +50,14 @@ const createRequestWithEndError = (scenario: RequestEndErrorScenario): http.Clie
 	return request;
 };
 
-const createDestroyedRequest = ({emitsError, closed = false}: {emitsError: boolean; closed?: boolean}): http.ClientRequest => {
+const createDestroyedRequest = ({emitsError, emitsClose = true, closesBeforeEnd = false}: {emitsError: boolean; emitsClose?: boolean; closesBeforeEnd?: boolean}): http.ClientRequest => {
 	const request = new EventEmitter() as http.ClientRequest & {closed: boolean};
-	request.closed = closed;
+	request.closed = false;
+
+	const close = () => {
+		request.closed = true;
+		request.emit('close');
+	};
 
 	// @ts-expect-error Mocking the behaviour of a ClientRequest
 	request.write = (_chunk: unknown, _encoding: unknown, callback?: () => void) => {
@@ -61,18 +68,19 @@ const createDestroyedRequest = ({emitsError, closed = false}: {emitsError: boole
 	// @ts-expect-error Mocking the behaviour of a ClientRequest
 	request.end = (callback: (error: Error) => void) => {
 		process.nextTick(() => {
-			callback(Object.assign(new Error('write ECANCELED'), {code: 'ECANCELED'}));
-
-			if (closed) {
-				return;
+			if (closesBeforeEnd) {
+				close();
 			}
+
+			callback(Object.assign(new Error('write ECANCELED'), {code: 'ECANCELED'}));
 
 			if (emitsError) {
 				request.emit('error', Object.assign(new Error('socket hang up'), {code: 'ECONNRESET'}));
 			}
 
-			request.closed = true;
-			request.emit('close');
+			if (emitsClose && !closesBeforeEnd) {
+				close();
+			}
 		});
 	};
 
@@ -471,10 +479,10 @@ test('rejects with `ECANCELED` when the destroyed request emits no error', async
 	t.is(attemptCount, 1);
 });
 
-test('rejects with `ECANCELED` when the request already closed', async t => {
+test('rejects with `ECANCELED` when the destroyed request emits neither error nor close', async t => {
 	const error = await t.throwsAsync<RequestError>(got.put('http://localhost', {
 		body: 'wow',
-		request: () => createDestroyedRequest({emitsError: false, closed: true}),
+		request: () => createDestroyedRequest({emitsError: false, emitsClose: false}),
 		retry: 0
 	}), {
 		instanceOf: RequestError
@@ -527,6 +535,227 @@ test('retries an upload whose socket is destroyed without an error', async t => 
 	});
 
 	t.is(error.code, 'ECONNRESET');
+	t.deepEqual(retries, ['ECONNRESET']);
+});
+
+test('rejects without waiting when the request closed before its end callback', async t => {
+	const start = Date.now();
+
+	const error = await t.throwsAsync<RequestError>(got.put('http://localhost', {
+		body: 'wow',
+		request: () => createDestroyedRequest({emitsError: false, closesBeforeEnd: true}),
+		retry: 0
+	}), {
+		instanceOf: RequestError
+	});
+
+	t.is(error.code, 'ECANCELED');
+	t.true(Date.now() - start < 500, `took ${Date.now() - start}ms`);
+});
+
+test('a pending end error fallback does not keep the process alive', async t => {
+	const script = `
+		const {EventEmitter} = require('events');
+		const got = require(${JSON.stringify(require.resolve('../source'))}).default;
+		const request = new EventEmitter();
+		request.write = (chunk, encoding, callback) => process.nextTick(() => callback && callback());
+		request.end = callback => process.nextTick(() => {
+			callback(Object.assign(new Error('write ECANCELED'), {code: 'ECANCELED'}));
+			request.emit('error', Object.assign(new Error('socket hang up'), {code: 'ECONNRESET'}));
+		});
+		request.abort = () => {};
+		request.destroy = () => request;
+		got.put('http://localhost', {body: 'wow', request: () => request, retry: 0}).catch(error => console.log(error.code));
+	`;
+
+	const start = Date.now();
+	const {stdout} = await new Promise<{stdout: string}>((resolve, reject) => {
+		childProcess.execFile(process.execPath, ['-e', script], (error, stdout) => {
+			if (error) {
+				reject(error);
+				return;
+			}
+
+			resolve({stdout});
+		});
+	});
+
+	t.is(stdout.trim(), 'ECONNRESET');
+	t.true(Date.now() - start < 900, `took ${Date.now() - start}ms`);
+});
+
+const listenOnLocalhost = async (t: ExecutionContext, handler: http.RequestListener): Promise<number> => {
+	const server = http.createServer(handler);
+
+	await new Promise<void>(resolve => {
+		server.listen(0, '127.0.0.1', resolve);
+	});
+
+	t.teardown(() => {
+		server.close();
+	});
+
+	return (server.address() as net.AddressInfo).port;
+};
+
+const respondOk: http.RequestListener = (request, response) => {
+	request.resume();
+	request.on('end', () => {
+		response.end('ok');
+	});
+};
+
+const requestDestroyedOnConnect = async (port: number, options: {method: 'PUT' | 'GET'; body?: string}): Promise<{body: string; retries: Array<string | undefined>}> => {
+	let attemptCount = 0;
+	const retries: Array<string | undefined> = [];
+
+	const {body} = await got(`http://127.0.0.1:${port}`, {
+		...options,
+		agent: {http: new http.Agent({keepAlive: false})},
+		request: (url, requestOptions, callback) => {
+			const request = http.request(url, requestOptions, callback);
+
+			if (attemptCount++ === 0) {
+				request.once('socket', socket => {
+					socket.once('connect', () => {
+						socket.destroy();
+					});
+				});
+			}
+
+			return request;
+		},
+		retry: {
+			limit: 1,
+			...retryImmediately
+		},
+		hooks: {
+			beforeRetry: [
+				(_options, error) => {
+					retries.push(error?.code);
+				}
+			]
+		}
+	});
+
+	return {body, retries};
+};
+
+test('retries an upload whose socket is destroyed when it connects', async t => {
+	const port = await listenOnLocalhost(t, respondOk);
+	const {body, retries} = await requestDestroyedOnConnect(port, {method: 'PUT', body: 'wow'});
+
+	t.is(body, 'ok');
+	t.deepEqual(retries, ['ECONNRESET']);
+});
+
+test('retries a request without a body whose socket is destroyed when it connects', async t => {
+	const port = await listenOnLocalhost(t, respondOk);
+	const {body, retries} = await requestDestroyedOnConnect(port, {method: 'GET'});
+
+	t.is(body, 'ok');
+	t.deepEqual(retries, ['ECONNRESET']);
+});
+
+class DelayedCloseSocket extends Duplex {
+	connecting = true;
+
+	private readonly inner: net.Socket;
+
+	constructor(port: number) {
+		super();
+
+		this.inner = net.connect(port, '127.0.0.1');
+		this.inner.on('data', (chunk: Buffer) => {
+			if (!this.push(chunk)) {
+				this.inner.pause();
+			}
+		});
+		this.inner.on('end', () => this.push(null));
+		this.inner.on('error', (error: Error) => this.destroy(error));
+		this.inner.once('connect', () => {
+			this.connecting = false;
+			this.emit('connect');
+		});
+	}
+
+	_read(): void {
+		this.inner.resume();
+	}
+
+	_write(chunk: Buffer, encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+		this.inner.write(chunk, encoding, callback);
+	}
+
+	_final(callback: () => void): void {
+		this.inner.end(callback);
+	}
+
+	_destroy(error: Error | null, callback: (error: Error | null) => void): void {
+		this.inner.destroy();
+		setTimeout(() => {
+			callback(error);
+		}, 5);
+	}
+
+	setNoDelay(): void {}
+
+	setKeepAlive(): void {}
+
+	setTimeout(): this {
+		return this;
+	}
+
+	ref(): void {}
+
+	unref(): void {}
+}
+
+test('retries an upload whose socket closes asynchronously after being destroyed', async t => {
+	let hits = 0;
+	const port = await listenOnLocalhost(t, (request, response) => {
+		if (hits++ === 0) {
+			request.pause();
+			return;
+		}
+
+		respondOk(request, response);
+	});
+
+	let sockets = 0;
+	const retries: Array<string | undefined> = [];
+
+	const {body} = await got.put(`http://127.0.0.1:${port}`, {
+		body: Buffer.alloc(8 * 1024 * 1024),
+		request: (url, options, callback) => http.request(url, {
+			...options,
+			agent: undefined,
+			createConnection: () => {
+				const socket = new DelayedCloseSocket(port);
+
+				if (sockets++ === 0) {
+					setTimeout(() => {
+						socket.destroy();
+					}, 100);
+				}
+
+				return socket as unknown as net.Socket;
+			}
+		}, callback),
+		retry: {
+			limit: 1,
+			...retryImmediately
+		},
+		hooks: {
+			beforeRetry: [
+				(_options, error) => {
+					retries.push(error?.code);
+				}
+			]
+		}
+	});
+
+	t.is(body, 'ok');
 	t.deepEqual(retries, ['ECONNRESET']);
 });
 

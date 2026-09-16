@@ -1,5 +1,5 @@
 import {promisify} from 'util';
-import {Duplex, Writable, Readable} from 'stream';
+import {Duplex, Readable} from 'stream';
 import {ReadStream} from 'fs';
 import {URL, URLSearchParams} from 'url';
 import {Socket} from 'net';
@@ -52,11 +52,15 @@ const kStopReading = Symbol('stopReading');
 const kTriggerRead = Symbol('triggerRead');
 const kBody = Symbol('body');
 const kJobs = Symbol('jobs');
+const kPipedSources = Symbol('pipedSources');
 const kOriginalResponse = Symbol('originalResponse');
 const kRetryTimeout = Symbol('retryTimeout');
 export const kIsNormalizedAlready = Symbol('isNormalizedAlready');
 
-const destroyedWithoutErrorCodes = new Set(['ECANCELED', 'ERR_STREAM_DESTROYED']);
+const deferredEndErrorCodes = new Set(['ECANCELED', 'ERR_STREAM_DESTROYED', 'ERR_SOCKET_CLOSED']);
+const deferredEndErrorTimeout = 1000;
+
+const hasPayload = (chunk: unknown): boolean => chunk !== undefined && chunk !== null && typeof chunk !== 'function';
 
 const supportsBrotli = is.string((process.versions as any).brotli);
 
@@ -1361,6 +1365,7 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 	[kTriggerRead]: boolean;
 	[kBody]: Options['body'];
 	[kJobs]: Array<() => void>;
+	[kPipedSources]: Map<NodeJS.ReadableStream, () => void>;
 	[kRetryTimeout]?: NodeJS.Timeout;
 	[kBodySize]?: number;
 	[kServerResponsesPiped]: Set<ServerResponse>;
@@ -1397,6 +1402,7 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 		this[kStopReading] = false;
 		this[kTriggerRead] = false;
 		this[kJobs] = [];
+		this[kPipedSources] = new Map();
 		this.retryCount = 0;
 
 		// TODO: Remove this when targeting Node.js >= 12
@@ -1405,7 +1411,9 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 		const unlockWrite = (): void => this._unlockWrite();
 		const lockWrite = (): void => this._lockWrite();
 
-		this.on('pipe', (source: Writable) => {
+		this.on('pipe', (source: Readable) => {
+			this._trackPipedSource(source);
+
 			source.prependListener('data', unlockWrite);
 			source.on('data', lockWrite);
 
@@ -1413,7 +1421,9 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 			source.on('end', lockWrite);
 		});
 
-		this.on('unpipe', (source: Writable) => {
+		this.on('unpipe', (source: Readable) => {
+			this[kPipedSources].get(source)?.();
+
 			source.off('data', unlockWrite);
 			source.off('data', lockWrite);
 
@@ -1433,6 +1443,10 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 		const {json, body, form} = options;
 		if (json || body || form) {
 			this._lockWrite();
+		}
+
+		if (is.nodeStream(body)) {
+			this._trackPipedSource(body);
 		}
 
 		if (kIsNormalizedAlready in options) {
@@ -1892,10 +1906,9 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 			throw new TypeError('The payload has been already provided');
 		};
 
-		// `stream.pipeline()` ends the destination from its own `end` listener, after the lock is back in place (Node.js 17.3+). Ending without a payload writes nothing, so it stays allowed.
+		// `stream.pipeline()` ends the destination from its own `end` listener, after the lock is back in place (Node.js 17.3+). Ending without a chunk once every piped source has ended writes nothing, so it stays allowed.
 		const endWithoutPayload = (...args: unknown[]): this => {
-			const [chunk] = args;
-			if (chunk !== undefined && chunk !== null && typeof chunk !== 'function') {
+			if (hasPayload(args[0]) || this[kPipedSources].size > 0) {
 				onLockedWrite();
 			}
 
@@ -1904,6 +1917,26 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 
 		this.write = onLockedWrite;
 		this.end = endWithoutPayload;
+	}
+
+	_trackPipedSource(source: NodeJS.ReadableStream): void {
+		if (this[kPipedSources].has(source)) {
+			return;
+		}
+
+		const untrack = (): void => {
+			this[kPipedSources].delete(source);
+			source.removeListener('end', untrack);
+			source.removeListener('close', untrack);
+			this.removeListener('close', untrack);
+		};
+
+		this[kPipedSources].set(source, untrack);
+
+		// Registered first, so the source no longer counts once `stream.pipeline()` ends this stream from its own `end` listener.
+		source.prependListener('end', untrack);
+		source.prependListener('close', untrack);
+		this.once('close', untrack);
 	}
 
 	_unlockWrite(): void {
@@ -2715,11 +2748,18 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 			request.end((error?: NodeJS.ErrnoException | null) => {
 				if (error) {
 					// `ClientRequest.end()` can report the same failure as the request's `error` event. Route it through Got's retry handling without completing `_final`, so this Duplex does not finish a failed upload.
-					// A request destroyed without an error reports `ECANCELED` here before its `error` event carries the retryable cause, and `close` always follows that event.
-					if (destroyedWithoutErrorCodes.has(error.code!) && !(request as ClientRequest & {closed?: boolean}).closed) {
-						request.once('close', () => {
+					// A destroyed socket reports `ECANCELED` or `ERR_SOCKET_CLOSED` here before the request's `error` event carries the retryable cause, and `close` always follows that event. The timeout settles requests whose socket never emits `close`; closing this stream first cancels it.
+					if (deferredEndErrorCodes.has(error.code!) && !(request as ClientRequest & {closed?: boolean}).closed) {
+						const reportEndError = (): void => {
+							clearTimeout(fallback);
+							request.off('close', reportEndError);
+							this.off('close', reportEndError);
 							this._beforeError(error);
-						});
+						};
+
+						const fallback = setTimeout(reportEndError, deferredEndErrorTimeout);
+						request.once('close', reportEndError);
+						this.once('close', reportEndError);
 						return;
 					}
 
@@ -2730,7 +2770,7 @@ export default class Request extends Duplex implements RequestEvents<Request> {
 				this[kBodySize] = this[kUploadedSize];
 
 				this.emit('uploadProgress', this.uploadProgress);
-				this[kRequest]!.emit('upload-complete');
+				request.emit('upload-complete');
 
 				callback();
 			});

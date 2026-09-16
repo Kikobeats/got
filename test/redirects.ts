@@ -1,3 +1,5 @@
+import http = require('http');
+import {AddressInfo} from 'net';
 import test from 'ava';
 import {Handler} from 'express';
 import nock = require('nock');
@@ -537,4 +539,54 @@ test('cannot redirect to unix protocol', withServer, async (t, server, got) => {
 		message: 'Cannot redirect to UNIX socket',
 		instanceOf: RequestError
 	});
+});
+
+test('an upload finishing while a redirect is in progress does not throw', async t => {
+	const bodySize = 32 * 1024 * 1024;
+	const server = http.createServer((request, response) => {
+		if (request.url === '/final') {
+			let received = 0;
+			request.on('data', (chunk: Buffer) => {
+				received += chunk.length;
+			});
+			request.on('end', () => {
+				response.end(String(received));
+			});
+			return;
+		}
+
+		response.writeHead(307, {location: '/final'});
+		response.flushHeaders();
+		request.pause();
+		setTimeout(() => {
+			request.resume();
+			request.on('end', () => {
+				response.end();
+			});
+		}, 100);
+	});
+
+	await new Promise<void>(resolve => {
+		server.listen(0, '127.0.0.1', resolve);
+	});
+
+	t.teardown(() => {
+		server.close();
+	});
+
+	const {port} = server.address() as AddressInfo;
+
+	const {body} = await got.put(`http://127.0.0.1:${port}/start`, {
+		body: Buffer.alloc(bodySize),
+		retry: 0,
+		hooks: {
+			beforeRedirect: [
+				async () => new Promise(resolve => {
+					setTimeout(resolve, 500);
+				})
+			]
+		}
+	});
+
+	t.is(body, String(bodySize));
 });

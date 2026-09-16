@@ -13,6 +13,8 @@ export default (response: unknown): void => {
 	}
 
 	Object.defineProperty(response, 'complete', {
-		get: () => response.writableEnded
+		get: () => response.writableEnded,
+		enumerable: descriptor.enumerable,
+		configurable: true
 	});
 };
