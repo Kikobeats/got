@@ -35,3 +35,49 @@ jobs:
         run: npm run build
       - name: Test
         run: npx ava
+
+  release:
+    name: Release
+    if: github.event_name == 'push'
+    needs: [test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          registry-url: https://registry.npmjs.org
+      - name: Read the version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if npm view "@kikobeats/got@$VERSION" version > /dev/null 2>&1; then
+            echo "@kikobeats/got@$VERSION is already published"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install dev dependencies
+        if: steps.version.outputs.publish == 'true'
+        run: npm install --ignore-scripts --before=$DEV_DEPENDENCIES_BEFORE
+      - name: Install latest runtime dependencies in range
+        if: steps.version.outputs.publish == 'true'
+        run: |
+          RUNTIME_DEPENDENCIES=$(node -p "Object.entries(require('./package.json').dependencies).map(([name, range]) => name + '@' + range).join(' ')")
+          npm install --ignore-scripts --no-save $RUNTIME_DEPENDENCIES pem@$PEM_VERSION @types/node@$TYPES_NODE_VERSION
+      - name: Publish
+        if: steps.version.outputs.publish == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access=public
+      - name: Tag and release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+          gh release create "v$VERSION" --title "v$VERSION" --generate-notes
