@@ -1,0 +1,52 @@
+name: pull_request
+
+on:
+  pull_request:
+    branches:
+      - v11
+  workflow_call:
+
+env:
+  DEV_DEPENDENCIES_BEFORE: '2021-06-15'
+  PEM_VERSION: '1.14.8'
+  TYPES_NODE_VERSION: '14.18.34'
+  SKIP_INSTALL_SIMPLE_GIT_HOOKS: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          # xo 0.34 calls util.isDate, removed in Node.js 23
+          node-version: 22
+      - name: Install
+        uses: ./.github/actions/install
+      - name: Lint
+        run: npx xo
+
+  test:
+    name: Node.js ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [lts/*, latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: node --version && openssl version
+      - name: Install
+        uses: ./.github/actions/install
+      - name: Build
+        run: npm run build
+      - name: Test
+        run: npx nyc --reporter=text ava

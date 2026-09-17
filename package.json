@@ -14,9 +14,16 @@
 	},
 	"scripts": {
 		"test": "xo && npm run build && nyc --reporter=html --reporter=text ava",
-		"release": "np",
 		"build": "del-cli dist && tsc",
-		"prepare": "npm run build"
+		"prepare": "npm run build",
+		"postrelease": "npm run release:tags && npm run release:github && (ci-publish || npm publish --access=public)",
+		"release": "npm run release:version && npm run release:changelog && npm run release:commit && npm run release:tag",
+		"release:changelog": "conventional-changelog -p conventionalcommits -i CHANGELOG.md -s",
+		"release:commit": "git add package.json CHANGELOG.md && git commit -m \"chore(release): $(node -p \"require('./package.json').version\")\"",
+		"release:github": "npx -y github-generate-release",
+		"release:tag": "git tag -a v$(node -p \"require('./package.json').version\") -m \"v$(node -p \"require('./package.json').version\")\"",
+		"release:tags": "git push origin HEAD:v11 --follow-tags",
+		"release:version": "standard-version --skip.changelog --skip.commit --skip.tag"
 	},
 	"files": [
 		"dist/source"
@@ -60,6 +67,8 @@
 	},
 	"devDependencies": {
 		"@ava/typescript": "^1.1.1",
+		"@commitlint/cli": "latest",
+		"@commitlint/config-conventional": "latest",
 		"@sindresorhus/tsconfig": "^0.7.0",
 		"@sinonjs/fake-timers": "^6.0.1",
 		"@types/benchmark": "^1.0.33",
@@ -74,6 +83,8 @@
 		"ava": "^3.11.1",
 		"axios": "^0.20.0",
 		"benchmark": "^2.1.4",
+		"ci-publish": "latest",
+		"conventional-changelog-cli": "latest",
 		"coveralls": "^3.1.0",
 		"create-test-server": "^3.0.1",
 		"del-cli": "^3.0.1",
@@ -83,13 +94,14 @@
 		"get-stream": "^6.0.0",
 		"nock": "^13.0.4",
 		"node-fetch": "^2.6.0",
-		"np": "^6.4.0",
 		"nyc": "^15.1.0",
 		"p-event": "^4.2.0",
 		"pem": "^1.14.4",
 		"pify": "^5.0.0",
+		"simple-git-hooks": "latest",
 		"sinon": "^9.0.3",
 		"slow-stream": "0.0.4",
+		"standard-version": "latest",
 		"tempy": "^1.0.0",
 		"to-readable-stream": "^2.1.0",
 		"tough-cookie": "^4.0.0",
@@ -129,5 +141,18 @@
 			"@typescript-eslint/no-implicit-any-catch": "off"
 		}
 	},
-	"runkitExampleFilename": "./documentation/examples/runkit-example.js"
+	"runkitExampleFilename": "./documentation/examples/runkit-example.js",
+	"commitlint": {
+		"extends": [
+			"@commitlint/config-conventional"
+		],
+		"rules": {
+			"body-max-line-length": [
+				0
+			]
+		}
+	},
+	"simple-git-hooks": {
+		"commit-msg": "npx commitlint --edit"
+	}
 }

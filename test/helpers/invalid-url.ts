@@ -1,6 +1,6 @@
-import {ExecutionContext} from 'ava';
+import * as test from 'ava';
 
-export default function invalidUrl(t: ExecutionContext, error: (TypeError & NodeJS.ErrnoException) | undefined, url: string): void {
+export default function invalidUrl(t: test.ExecutionContext, error: (TypeError & NodeJS.ErrnoException) | undefined, url: string): void {
 	t.is(error?.code, 'ERR_INVALID_URL');
 
 	if (error?.message === 'Invalid URL') {
