@@ -1,40 +1,52 @@
 name: pull_request
 
 on:
-  push:
-    branches:
-      - master
   pull_request:
     branches:
-      - master
+      - v11
+  workflow_call:
 
 env:
+  DEV_DEPENDENCIES_BEFORE: '2021-06-15'
+  PEM_VERSION: '1.14.8'
+  TYPES_NODE_VERSION: '14.18.34'
   SKIP_INSTALL_SIMPLE_GIT_HOOKS: true
 
 jobs:
-  test:
-    if: github.ref != 'refs/heads/master'
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: lts/*
-      - name: Setup PNPM
-        uses: pnpm/action-setup@v6
-        with:
-          version: latest
+          # xo 0.34 calls util.isDate, removed in Node.js 23
+          node-version: 22
       - name: Install
-        run: pnpm install --dangerously-allow-all-builds
-      - name: Test
-        run: pnpm test
-      - name: Report
-        run: npx c8 report --reporter=text-lcov > coverage/lcov.info
-      - name: Coverage
-        uses: coverallsapp/github-action@main
+        uses: ./.github/actions/install
+      - name: Lint
+        run: npx xo
+
+  test:
+    name: Node.js ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [lts/*, latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          node-version: ${{ matrix.node-version }}
+      - run: node --version && openssl version
+      - name: Install
+        uses: ./.github/actions/install
+      - name: Build
+        run: npm run build
+      - name: Test
+        run: npx nyc --reporter=text ava
