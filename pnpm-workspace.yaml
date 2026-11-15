@@ -1,2 +1,5 @@
 overrides:
   "@types/express-serve-static-core": 4.17.30
+publicHoistPattern:
+  - "*eslint*"
+  - "*prettier*"

@@ -24,7 +24,7 @@ jobs:
       - name: Install
         uses: ./.github/actions/install
       - name: Lint
-        run: npx xo
+        run: pnpm exec xo
 
   test:
     name: Node.js ${{ matrix.node-version }}
@@ -44,6 +44,6 @@ jobs:
       - name: Install
         uses: ./.github/actions/install
       - name: Build
-        run: npm run build
+        run: pnpm build
       - name: Test
-        run: npx nyc --reporter=text ava
+        run: pnpm exec nyc --reporter=text ava
