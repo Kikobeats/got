@@ -610,7 +610,6 @@ test.serial('doesn\'t throw on early lookup', withServerAndFakeTimers, async (t,
 				return;
 			}
 
-			// @ts-expect-error This should be fixed in upstream
 			callback(null, '127.0.0.1', 4);
 		}
 	}));
