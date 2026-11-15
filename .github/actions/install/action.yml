@@ -9,4 +9,4 @@ runs:
         version: latest
     - name: Install dependencies
       shell: bash
-      run: pnpm install --dangerously-allow-all-builds
+      run: pnpm install
