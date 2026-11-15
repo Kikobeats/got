@@ -107,7 +107,7 @@
 		"standard-version": "latest",
 		"tempy": "^1.0.0",
 		"to-readable-stream": "^2.1.0",
-		"tough-cookie": "4.0.0",
+		"tough-cookie": "^4.1.4",
 		"typescript": "4.0.3",
 		"xo": "^0.34.1"
 	},
