@@ -605,12 +605,12 @@ test.serial('doesn\'t throw on early lookup', withServerAndFakeTimers, async (t,
 			if (typeof options === 'function') {
 				callback = options;
 			} else if ((options as {all?: boolean}).all) {
-			// @ts-expect-error This should be fixed in upstream
-			callback(null, [{address: '127.0.0.1', family: 4}]);
-			return;
-		}
+				// @ts-expect-error This should be fixed in upstream
+				callback(null, [{address: '127.0.0.1', family: 4}]);
+				return;
+			}
 
-		callback(null, '127.0.0.1', 4);
+			callback(null, '127.0.0.1', 4);
 		}
 	}));
 });
