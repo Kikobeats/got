@@ -13,11 +13,11 @@
 		"node": ">=10.19.0"
 	},
 	"scripts": {
-		"test": "xo && npm run build && nyc --reporter=html --reporter=text ava",
+		"test": "xo && pnpm build && nyc --reporter=html --reporter=text ava",
 		"build": "del-cli dist && tsc",
-		"prepare": "npm run build",
-		"postrelease": "npm run release:tags && npm run release:github && (ci-publish || npm publish --access=public)",
-		"release": "npm run release:version && npm run release:changelog && npm run release:commit && npm run release:tag",
+		"prepare": "pnpm build",
+		"postrelease": "pnpm release:tags && pnpm release:github && (ci-publish || pnpm publish --access=public --no-git-checks)",
+		"release": "pnpm release:version && pnpm release:changelog && pnpm release:commit && pnpm release:tag",
 		"release:changelog": "conventional-changelog -p conventionalcommits -i CHANGELOG.md",
 		"release:commit": "git add package.json CHANGELOG.md && git commit -m \"chore(release): $(node -p \"require('./package.json').version\")\"",
 		"release:github": "github-generate-release",
@@ -111,9 +111,6 @@
 		"tough-cookie": "^4.1.4",
 		"typescript": "4.0.3",
 		"xo": "^0.34.1"
-	},
-	"overrides": {
-		"@types/express-serve-static-core": "4.17.30"
 	},
 	"types": "dist/source",
 	"sideEffects": false,

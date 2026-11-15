@@ -10,6 +10,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  pnpm_config_dangerously_allow_all_builds: true
   SKIP_INSTALL_SIMPLE_GIT_HOOKS: true
 
 jobs:
@@ -43,4 +44,4 @@ jobs:
         run: |
           git config --global user.email "${{ secrets.GIT_EMAIL }}"
           git config --global user.name "${{ secrets.GIT_USERNAME }}"
-          npm run release
+          pnpm release
