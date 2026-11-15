@@ -1,3 +1,5 @@
+### [11.8.10](https://github.com/kikobeats/got/compare/v11.8.9...v11.8.10) (2026-11-15)
+
 ### [11.8.9](https://github.com/kikobeats/got/compare/v11.8.8...v11.8.9) (2026-09-17)
 
 
