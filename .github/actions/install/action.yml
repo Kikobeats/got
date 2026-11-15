@@ -1,16 +1,8 @@
 name: Install
-description: Install dev dependencies as of DEV_DEPENDENCIES_BEFORE and runtime dependencies at their latest version in range
+description: Install dependencies
 runs:
   using: composite
   steps:
-    - name: Install dev dependencies
+    - name: Install dependencies
       shell: bash
-      run: |
-        npm pkg delete dependencies
-        npm install --ignore-scripts --before=$DEV_DEPENDENCIES_BEFORE
-        git checkout package.json
-    - name: Install latest runtime dependencies in range
-      shell: bash
-      run: |
-        RUNTIME_DEPENDENCIES=$(node -p "Object.entries(require('./package.json').dependencies).map(([name, range]) => name + '@' + range).join(' ')")
-        npm install --ignore-scripts --no-save $RUNTIME_DEPENDENCIES pem@$PEM_VERSION @types/node@$TYPES_NODE_VERSION
+      run: npm install --ignore-scripts
