@@ -1,3 +1,5 @@
+## [11.8.12](https://github.com/kikobeats/got/compare/v11.8.11...v11.8.12) (2026-11-15)
+
 ## [11.8.11](https://github.com/kikobeats/got/compare/v11.8.10...v11.8.11) (2026-11-15)
 
 ### Bug Fixes
