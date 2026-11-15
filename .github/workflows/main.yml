@@ -10,9 +10,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DEV_DEPENDENCIES_BEFORE: '2021-06-15'
-  PEM_VERSION: '1.14.8'
-  TYPES_NODE_VERSION: '14.18.34'
   SKIP_INSTALL_SIMPLE_GIT_HOOKS: true
 
 jobs:
